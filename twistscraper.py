@@ -3,6 +3,7 @@ import json
 from http.client import HTTPException
 from urllib.parse import urlencode
 from urllib.request import urlopen
+from genericpath import exists
 from os.path import expanduser
 
 __author__ = 'Giacomo Lacava'
@@ -20,41 +21,70 @@ except ImportError as exc:
     sys.exit(-1)
 
 
-class User:
-    username = ""
-    avatar = ""
-    fullname = ""
-    location = ""
-    coords = None
-    bio = ""
-    url = ""
-    updateTime = 0
-    following = []
-
+class GeoLocationService:
+    CACHEFILE = expanduser('~/.twister/_localusers_geolocation.db')
     _GMAP_URL = "https://maps.googleapis.com/maps/api/geocode/json?sensor=false&{query}"
 
-    def locate(self):
+    def __init__(self):
+        self.db = {}
+        if exists(GeoLocationService.CACHEFILE):
+            with open(GeoLocationService.CACHEFILE, 'rb') as gcache:
+                self.db = pickle.load(gcache)
+
+    def locate(self, location):
         """
         Query Google API and save coordinates. Should work until we start having more than 50 new locatable
                 users per hour.
         :return: dict with coordinates { 'lat':12345, 'lng':13245 }
         """
-        if self.location == '':
-            return None
-        if self.coords is not None:
-            return self.coords
 
-        loc = urlencode({'address': self.location})
-        urldoc = urlopen(User._GMAP_URL.format(query=loc))
+        # if in cache, return that
+        if location in self.db:
+            return self.db[location]
+            # ok, let's look it up
+        loc = urlencode({'address': location})
+        urldoc = urlopen(GeoLocationService._GMAP_URL.format(query=loc))
         jsObj = json.loads(urldoc.readall().decode('utf-8'))
         if len(jsObj['results']) > 0:
             # discard commercial results
             locTypes = jsObj['results'][0]['address_components'][0]['types']
             if not 'premise' in locTypes and not 'route' in locTypes and not 'establishment' in locTypes and not 'subpremise' in locTypes:
-                self.coords = jsObj['results'][0]['geometry']['location']
-                return self.coords
+                coords = jsObj['results'][0]['geometry']['location']
+                # let's cache it and save db
+                self.db[location] = coords
+                self.saveDb()
+                return coords
             # still here? it's all rubbish
         return None
+
+    def saveDb(self):
+        with open(GeoLocationService.CACHEFILE, 'wb') as gfile:
+            pickle.dump(self.db, gfile)
+
+
+class User:
+    def __init__(self):
+        self.locService = GeoLocationService()
+        self.username = ""
+        self.avatar = ""
+        self.fullname = ""
+        self.location = ""
+        self.coords = None
+        self.bio = ""
+        self.url = ""
+        self.updateTime = 0
+        self.following = []
+
+
+    def locate(self):
+        # OO wrapper for GeoLocationService.locate()
+        if self.location == '':
+            return None
+        if self.coords is not None:
+            return self.coords
+
+        self.coords = self.locService.locate(self.location)
+        return self.coords
 
 
 class TwisterDb:
