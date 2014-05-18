@@ -54,7 +54,7 @@ class GeoLocationService:
                 self.db[location] = coords
                 self.saveDb()
                 return coords
-            # still here? it's all rubbish
+                # still here? it's all rubbish
         return None
 
     def saveDb(self):
@@ -164,8 +164,20 @@ class TwisterScraper:
                 print("Connection error retrieving user {0}: {1}".format(u, str(e)))
 
     def saveDb(self):
-        with open(self.dbFile, 'wb') as dbFile:
-            pickle.dump(self.db, dbFile)
+        try:
+            with open(self.dbFile, 'wb') as dbFile:
+                pickle.dump(self.db, dbFile)
+        except (KeyboardInterrupt, Exception):
+            print("Closing db before quitting...")
+            if dbFile:
+                # close the hung descriptor and re-try the dumping
+                try:
+                    dbFile.close()
+                except Exception:
+                    pass
+                with open(self.dbFile, 'wb') as dbFile:
+                    pickle.dump(self.db, dbFile)
+
 
     def get_posts_since(self, username, dateObj, maxNum=1000):
         since_epoch = time.mktime(dateObj.timetuple())
@@ -217,3 +229,4 @@ if __name__ == '__main__':
     ts = TwisterScraper(expanduser('~/.twister/_localusersdb'), 'localhost')
     ts.scrape_users()
     print("Total users in db: {0}".format(len(ts.db.users)))
+
