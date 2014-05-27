@@ -1,16 +1,15 @@
 # -*- coding: utf-8 -*-
-import json
 from http.client import HTTPException
 from urllib.parse import urlencode
-from urllib.request import urlopen
-from genericpath import exists
-from os.path import expanduser
-
-__author__ = 'Giacomo Lacava'
-
-import time, datetime
+from urllib.request import urlopen, Request
+import datetime
+import json
 import pickle
+import time
 import sys
+
+from os.path import expanduser, exists
+
 
 cacheTimeout = 24 * 3600
 
@@ -21,43 +20,102 @@ except ImportError as exc:
     sys.exit(-1)
 
 
-class GeoLocationService:
-    CACHEFILE = expanduser('~/.twister/_localusers_geolocation.db')
-    _GMAP_URL = "https://maps.googleapis.com/maps/api/geocode/json?sensor=false&{query}"
+class MaxGeoRequestsException(Exception):
+    def __init__(self, since):
+        super(Exception, self).__init__()
+        self.lastReset = since
+        print(self.__str__())
+
+    def __str__(self):
+        return "Reached max amounts of requests per hour ({} since {})".format(GeoLocationService.MAXREQUESTS,
+                                                                               self.lastReset.isoformat())
+
+
+class Borg:
+    _shared_state = {}
 
     def __init__(self):
-        self.db = {}
-        if exists(GeoLocationService.CACHEFILE):
-            with open(GeoLocationService.CACHEFILE, 'rb') as gcache:
-                self.db = pickle.load(gcache)
+        self.__dict__ = self._shared_state
+
+
+class GeoLocationService(Borg):
+    MAXREQUESTS = 60 * 60 # 1 req per second
+    CACHEFILE = expanduser('~/.twister/_localusers_geolocation.db')
+    NOMINATIM_URL = "http://nominatim.openstreetmap.org/search?format=jsonv2&{query}"
+
+    def __init__(self):
+        super(GeoLocationService, self).__init__()
+        if len(self.__dict__) == 0: # set up only if it's the first instance
+            self.db = {}
+            self._counter = 0
+            self._lastCounterReset = None
+            self._resetCounter()
+
+            if exists(GeoLocationService.CACHEFILE):
+                with open(GeoLocationService.CACHEFILE, 'rb') as gcache:
+                    self.db = pickle.load(gcache)
+
+    def _resetCounter(self):
+        self._counter = 0
+        self._lastCounterReset = datetime.datetime.now()
+
+    def canWeAsk(self):
+        """ Check if we can make a lookup.
+
+        :return: boolean
+        """
+        if self._counter <= (GeoLocationService.MAXREQUESTS - 1):
+            return True
+        now = datetime.datetime.now()
+        delta = now - self._lastCounterReset
+        if delta.total_seconds() > (60 * 60):
+            self._resetCounter()
+            return True
+        return False
 
     def locate(self, location):
         """
-        Query Google API and save coordinates. Should work until we start having more than 50 new locatable
-                users per hour.
+        Query Google API and save coordinates. Max 50 requests per hour
         :return: dict with coordinates { 'lat':12345, 'lng':13245 }
+        :raises: MaxGeoRequestsException when geolocation threshold has been reached
         """
 
         # if in cache, return that
         if location in self.db:
+            # this harmonization is due to old data
+            if type(self.db[location]) == dict:
+                coordTuple = (self.db[location]['lat'], self.db[location]['lng'])
+                self.db[location] = coordTuple
             return self.db[location]
-            # ok, let's look it up
-        loc = urlencode({'address': location})
-        urldoc = urlopen(GeoLocationService._GMAP_URL.format(query=loc))
-        jsObj = json.loads(urldoc.readall().decode('utf-8'))
-        if len(jsObj['results']) > 0:
-            # discard commercial results
-            locTypes = jsObj['results'][0]['address_components'][0]['types']
-            if not 'premise' in locTypes and not 'route' in locTypes and not 'establishment' in locTypes and not 'subpremise' in locTypes:
-                coords = jsObj['results'][0]['geometry']['location']
-                # let's cache it and save db
-                self.db[location] = coords
-                self.saveDb()
-                return coords
-                # still here? it's all rubbish
+
+        # not in cache? ok, let's look it up
+
+        if not self.canWeAsk():
+            # sorry, can't do it now
+            raise MaxGeoRequestsException(self._lastCounterReset)
+
+        print("Looking up \"{}\"".format(location))
+        loc = urlencode({'q': location})
+        print(GeoLocationService.NOMINATIM_URL.format(query=loc))
+        request = Request(GeoLocationService.NOMINATIM_URL.format(query=loc))
+        request.add_header('User-Agent', 'Twister User-Mapper script http://static.pythonaro.com/twistmap/')
+        urldoc = urlopen(request)
+        self._counter += 1
+        jsonText = urldoc.readall().decode('utf-8')
+        jsObj = json.loads(jsonText)
+        if len(jsObj) > 0:
+            coords = jsObj[0]['lat'], jsObj[0]['lon']
+            # let's cache it and save db
+            self.db[location] = coords
+            self.saveDb()
+            time.sleep(1) # to follow nominatim usage policy: http://wiki.openstreetmap.org/wiki/Nominatim_usage_policy
+            return coords
+
+        # still here? it's all rubbish
         return None
 
     def saveDb(self):
+        """ Save db to file """
         with open(GeoLocationService.CACHEFILE, 'wb') as gfile:
             pickle.dump(self.db, gfile)
 
@@ -78,13 +136,30 @@ class User:
 
     def locate(self):
         # OO wrapper for GeoLocationService.locate()
-        if self.location == '':
+        if hasattr(self, 'location') and self.location == '':
             return None
-        if self.coords is not None:
+        if hasattr(self, 'coords') and self.coords is not None:
             return self.coords
+
+        if not hasattr(self, 'locService'):
+            self.__dict__['locService'] = GeoLocationService()
 
         self.coords = self.locService.locate(self.location)
         return self.coords
+
+    def __setstate__(self, data):
+        """ Custom unpickling function to re-instantiate the location service
+        :param data: dictionary passed by pickle.load()
+        """
+        self.__dict__ = data
+        self.locService = GeoLocationService()
+
+    def __getstate__(self):
+        """ Custom pickler to drop references to the location service
+        :return: dict containing the object state
+        """
+        self.locService = None
+        return self.__dict__
 
 
 class TwisterDb:
@@ -104,6 +179,7 @@ class TwisterScraper:
                                                                                passwd=password)
         self.twister = AuthServiceProxy(self.serverUrl)
         self.dbFile = dbPath
+        self.locService = GeoLocationService()
 
         try:
             with open(self.dbFile, 'rb') as dbFile:
@@ -120,9 +196,6 @@ class TwisterScraper:
 
     def scrape_users(self):
         nextHash = 0
-        #if self.db.lastBlockHash is not None and len(self.db.users) != 0:
-        #    nextHash = self.db.lastBlockHash
-        #else:
         nextHash = self.twister.getblockhash(0)
 
         usernames = set()
@@ -142,7 +215,7 @@ class TwisterScraper:
         if len(self.db.users) == 0:
             # first run
             for u in usernames:
-                blankUser = User()
+                blankUser = User(self.locService)
                 blankUser.username = u
                 blankUser.updateTime = datetime.datetime.now() - self.CACHE_MAX_DURATION
             self.saveDb()
@@ -157,13 +230,20 @@ class TwisterScraper:
         for n, u in enumerate(to_fetch):
             try:
                 user = self._fetch_user_details(u)
+                if hasattr(u, 'location'):
+                    try:
+                        u.locate()
+                    except MaxGeoRequestsException:
+                        print("Could not locate '' because of max request limit reached")
                 self.db.users[user.username] = user
-                self.saveDb()
+                if n % 5 == 0:
+                    self.saveDb()
                 print("({line} of {total}) Fetched {user} ...".format(user=u, line=n, total=total_to_fetch))
             except HTTPException as e:
                 print("Connection error retrieving user {0}: {1}".format(u, str(e)))
 
     def saveDb(self):
+        print("Saving db")
         try:
             with open(self.dbFile, 'wb') as dbFile:
                 pickle.dump(self.db, dbFile)
@@ -177,7 +257,8 @@ class TwisterScraper:
                     pass
                 with open(self.dbFile, 'wb') as dbFile:
                     pickle.dump(self.db, dbFile)
-
+                    # once clean, re-raise
+                raise
 
     def get_posts_since(self, username, dateObj, maxNum=1000):
         since_epoch = time.mktime(dateObj.timetuple())
@@ -201,7 +282,7 @@ class TwisterScraper:
         return all_posts[index:]
 
     def _fetch_user_details(self, username):
-        user = User()
+        user = User(self.locService)
         user.username = username
 
         avatarData = self.twister.dhtget(username, "avatar", "s")

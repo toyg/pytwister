@@ -11,12 +11,12 @@ from twistscraper import TwisterScraper
 
 TEMPLATE = None
 with open("map.html", "rb") as mapTemplate:
-    TEMPLATE = Template(mapTemplate.read())
+    TEMPLATE = Template(mapTemplate.read().decode('utf-8'))
 
 
 def generate_map(userdb):
     ts = TwisterScraper(userdb)
-    loc_users = [u for u in ts.db.users.values() if u.location != '']
+    loc_users = [u for u in ts.db.users.values() if hasattr(u, 'location') and u.location != '']
     noLoc_user_num = len(ts.db.users) - len(loc_users)
     loc_users_fake_num = 0
     locDb = {}
@@ -32,7 +32,7 @@ def generate_map(userdb):
                 locDb[u.location]['users'] = [u.username]
             else:
                 loc_users_fake_num += 1
-        # second pass to aggregate misspellings
+                # second pass to aggregate misspellings
     done = []
     newLocDb = {}
     for loc, locDict in locDb.items():
@@ -48,7 +48,7 @@ def generate_map(userdb):
             # find the most popular name
             locMax = max(sameCoord, key=lambda x: len(x[1]))
             location = locMax[0]
-            coordHash = '/'.join([str(locDict['coordinates']['lat']), str(locDict['coordinates']['lng'])])
+            coordHash = '/'.join([str(locDict['coordinates'][0]), str(locDict['coordinates'][1])])
             # if we haven't seen this set of coordinates yet...
             if coordHash not in done:
 
@@ -70,8 +70,8 @@ def generate_map(userdb):
     for k in newLocDb.keys():
         locStrings.append("['<h4>{name} - {numusers}</h4><small>{users}</small>', {lat}, {lng}]".format(
             name=k.replace("'", "&apos;"),
-            lat=newLocDb[k]['coordinates']['lat'],
-            lng=newLocDb[k]['coordinates']['lng'],
+            lat=newLocDb[k]['coordinates'][0],
+            lng=newLocDb[k]['coordinates'][1],
             users=',<br />'.join(newLocDb[k]['users']),
             numusers=len(newLocDb[k]['users'])))
     locStrings.sort()
