@@ -4,8 +4,8 @@ Twister Python scripts
 These are some random scripts for Twister.
 Prerequisites:
 
-* Python 3.3.x (might work with 3.2 but it's untested. Probably won't work with 2.x)
-* [python-bitcoinrpc](https://github.com/jgarzik/python-bitcoinrpc)
+* Python 3.3.x (might work with 3.2 or 2.7 but it's untested. Probably won't work with 2.6-).
+* My patched [python-bitcoinrpc](https://github.com/toyg/python-bitcoinrpc) (the original by jgarzik currently fails to work with Unicode characters).
 * [feedparser](https://pypi.python.org/pypi/feedparser) (`pip install feedparser` will work) -- this is for twistmonitor.py only
 
 HELP!
