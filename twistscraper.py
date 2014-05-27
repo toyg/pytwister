@@ -215,7 +215,7 @@ class TwisterScraper:
         if len(self.db.users) == 0:
             # first run
             for u in usernames:
-                blankUser = User(self.locService)
+                blankUser = User()
                 blankUser.username = u
                 blankUser.updateTime = datetime.datetime.now() - self.CACHE_MAX_DURATION
             self.saveDb()
@@ -282,7 +282,7 @@ class TwisterScraper:
         return all_posts[index:]
 
     def _fetch_user_details(self, username):
-        user = User(self.locService)
+        user = User()
         user.username = username
 
         avatarData = self.twister.dhtget(username, "avatar", "s")
