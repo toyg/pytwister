@@ -7,7 +7,7 @@ from os.path import expanduser
 
 import feedparser
 
-from twistscraper import TwisterScraper
+from twistscraper import TwisterScraper, GeoLocationService, User
 
 __author__ = 'Giacomo Lacava'
 
