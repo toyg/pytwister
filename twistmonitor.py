@@ -7,40 +7,62 @@ from os.path import expanduser
 
 import feedparser
 
-from twistscraper import TwisterScraper, GeoLocationService, User
+from twistscraper import TwisterScraper
 
 __author__ = 'Giacomo Lacava'
 
-GITHUB_REPO_URL = 'https://github.com/{user}/{repo}'
-GITHUB_COMMIT_FEED_TEMPLATE = GITHUB_REPO_URL + '/commits/master.atom'
 
-CORE_COMMIT_FEED = GITHUB_COMMIT_FEED_TEMPLATE.format(user='miguelfreitas', repo='twister-core')
-HTML_COMMIT_FEED = GITHUB_COMMIT_FEED_TEMPLATE.format(user='miguelfreitas', repo='twister-html')
-SEED_COMMIT_FEED = GITHUB_COMMIT_FEED_TEMPLATE.format(user='miguelfreitas', repo='twister-seeder')
-CORE_REPO_URL = GITHUB_REPO_URL.format(user='miguelfreitas', repo='twister-core')
-HTML_REPO_URL = GITHUB_REPO_URL.format(user='miguelfreitas', repo='twister-html')
-SEED_REPO_URL = GITHUB_REPO_URL.format(user='miguelfreitas', repo='twister-seeder')
+class FeedCache:
+    _shared_state = {}
+
+    def __init__(self):
+        self.__dict__ = self._shared_state
+        if len(self.__dict__) == 0:
+            # first instance setup
+            self.cacheFile = expanduser('~/.twister/_twm_cache')
+            self.cache = {}
+            self._load_cache()
 
 
-class TwisterMonitor(Thread):
-    MESSAGE = 'Twister update: {msg} - Pull it now: {url}'
-
-    def __init__(self, twister_monitor, username, repo_feed=CORE_COMMIT_FEED, repo_url=CORE_REPO_URL):
-        Thread.__init__(self)
-        self.ts = twister_monitor
-        self.cacheFile = expanduser('~/.twister/_twm_cache')
-        self.cache = {}
-        self.username = username
-        self.feed = repo_feed
-        self.repo = repo_url
-        self.loadCache()
-
-    def loadCache(self):
+    def _load_cache(self):
         try:
             with open(self.cacheFile, 'rb') as f:
                 self.cache = pickle.load(f)
         except FileNotFoundError:
             self.cache = {}
+
+    def _save_cache(self):
+        with open(self.cacheFile, 'wb') as f:
+            pickle.dump(self.cache, f)
+
+    def get_feed_cache(self, feedUrl):
+        if feedUrl not in self.cache:
+            self.cache[feedUrl] = []
+        return self.cache[feedUrl]
+
+    def add_entry(self, feedUrl, entryID):
+        feed = self.get_feed_cache(feedUrl)
+        feed.append(entryID)
+        self._save_cache()
+
+
+class TwisterMonitor(Thread):
+    MESSAGE = '{repo}: {msg} - {url}'
+    GITHUB_REPO_URL = 'https://github.com/{user}/{repo}'
+    GITHUB_COMMIT_FEED_TEMPLATE = GITHUB_REPO_URL + '/commits/master.atom'
+
+
+    def __init__(self, scraperObj, username, github_user, github_repo):
+        Thread.__init__(self)
+        self.ts = scraperObj
+        self.cacheObj = FeedCache()
+        self.username = username
+        self.feed = TwisterMonitor.GITHUB_COMMIT_FEED_TEMPLATE.format(user=github_user, repo=github_repo)
+        self.repo = TwisterMonitor.GITHUB_REPO_URL.format(user=github_user, repo=github_repo)
+        self.github_user = github_user
+        self.github_repo = github_repo
+        self.cache = self.cacheObj.get_feed_cache(self.feed)
+
 
     def get_commits(self):
         print("Fetching {0}".format(self.feed))
@@ -48,17 +70,18 @@ class TwisterMonitor(Thread):
         if f['bozo'] == 1:
             raise Exception('Bad feed! Status: {status} - Error {err}'.format(status=f.status, err=f.bozo_exception))
 
-        if self.feed not in self.cache:
-            self.cache[self.feed] = []
-
         f.entries.sort(key=attrgetter('updated_parsed'))
         for entry in f.entries:
             print("Checking {0}".format(entry.id))
-            if entry.id not in self.cache[self.feed]:
-                message = TwisterMonitor.MESSAGE.format(msg=entry.title, url=self.repo)
+            if entry.id not in self.cache:
+                message = TwisterMonitor.MESSAGE.format(msg=entry.title,
+                                                        url=self.repo,
+                                                        repo=self.github_repo)
                 cut = 1
                 while len(message) >= 140:
-                    message = TwisterMonitor.MESSAGE.format(msg=(entry.title[:-cut] + '...'), url=self.repo)
+                    message = TwisterMonitor.MESSAGE.format(msg=(entry.title[:-cut] + '...'),
+                                                            url=self.repo,
+                                                            repo=self.github_repo)
                     cut += 1
 
                 print("Checking last post key...")
@@ -69,13 +92,9 @@ class TwisterMonitor(Thread):
                 print("Posting '{0}' with key {1}...".format(message, key))
                 self.ts.twister.newpostmsg(self.username, key, message)
                 print("Posted!")
-                self.cache[self.feed].append(entry.id)
-                self.saveCache()
+                self.cacheObj.add_entry(self.feed, entry.id)
                 sleep(10 * 60)
 
-    def saveCache(self):
-        with open(self.cacheFile, 'wb') as f:
-            pickle.dump(self.cache, f)
 
     def run(self):
         while True:
@@ -90,11 +109,11 @@ class TwisterMonitor(Thread):
 if __name__ == '__main__':
     botID = 'twmonitor'
     ts = TwisterScraper(expanduser('~/.twister/_localusersdb'))
-    monitor = TwisterMonitor(ts, botID, CORE_COMMIT_FEED, CORE_REPO_URL)
+    monitor = TwisterMonitor(ts, botID, "miguelfreitas", "twister-core")
     monitor.start()
     sleep(4 * 60)
-    monitor_ui = TwisterMonitor(ts, botID, HTML_COMMIT_FEED, HTML_REPO_URL)
+    monitor_ui = TwisterMonitor(ts, botID, "miguelfreitas", "twister-html")
     monitor_ui.start()
     sleep(6 * 60)
-    monitor_seed = TwisterMonitor(ts, botID, SEED_COMMIT_FEED, SEED_REPO_URL)
+    monitor_seed = TwisterMonitor(ts, botID, "miguelfreitas", "twister-seeder")
     monitor_seed.start()
